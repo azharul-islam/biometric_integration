@@ -383,18 +383,22 @@ def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None
     a promotion is not silently undone.
     """
     enroll = enroll if enroll is not None else _zk_enrollment(user_doc)
+    # Field names matter on this firmware generation: ZAM180/ZAM230 reject the
+    # whole UPDATE with Return=-629 when the privilege is sent as the older
+    # `Pri=`; the working form is `Privilege=` with an explicit `Card=` (empty
+    # when the user has none). Verified against the SpeedFace PUSH reference
+    # implementation and the pilot V5L.
     parts = [
         f"C:{cmd_id}:DATA UPDATE USERINFO",
         f"PIN={pin}",
         f"Name={name}",
-        f"Pri={_zk_pri(user_doc)}",
+        f"Privilege={_zk_pri(user_doc)}",
     ]
     passwd = (user_doc.get("device_password") if user_doc else None) or enroll.get("passwd") or ""
     if str(passwd).strip():
         parts.append(f"Passwd={passwd}")
     card = str(enroll.get("card") or "").strip()
-    if card and card != "0":
-        parts.append(f"Card={card}")
+    parts.append(f"Card={'' if card == '0' else card}")
     return "\t".join(parts)
 
 
