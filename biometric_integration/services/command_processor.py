@@ -374,7 +374,20 @@ def _zk_enrollment(user_doc) -> dict:
         return {}
 
 
-def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None = None) -> str:
+def _uses_new_user_verb(device: str) -> bool:
+    """ZAM180/ZAM230 terminals reject the classic USERINFO verb with -629.
+
+    They use the unified `DATA UPDATE user` form (lowercase "user",
+    `Pin=/Group=/Privilege=`). Detection is firmware/model based because the
+    device tells us both at registration.
+    """
+    fw = (frappe.db.get_value("Attendance Device", device, "firmware_version") or "").upper()
+    model = (frappe.db.get_value("Attendance Device", device, "device_model") or "").upper()
+    return fw.startswith(("ZAM1", "ZAM2")) or "SPEEDFACE" in model
+
+
+def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None = None,
+                 device: str | None = None) -> str:
     """Build a USERINFO update line without erasing credentials we already hold.
 
     Card and password are optional on the wire. Sending Card=0 / Passwd= from a
@@ -388,19 +401,36 @@ def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None
     # `Pri=`; the working form is `Privilege=` with an explicit `Card=` (empty
     # when the user has none). Verified against the SpeedFace PUSH reference
     # implementation and the pilot V5L.
-    # The verb is followed by a SPACE, then tab-separated fields — this is the
-    # layout used by the working SpeedFace implementation. A tab immediately
-    # after USERINFO is parsed as part of the verb and answered -629.
-    parts = [
-        f"C:{cmd_id}:DATA UPDATE USERINFO PIN={pin}",
-        f"Name={name}",
-        f"Privilege={_zk_pri(user_doc)}",
-    ]
-    passwd = (user_doc.get("device_password") if user_doc else None) or enroll.get("passwd") or ""
-    if str(passwd).strip():
-        parts.append(f"Passwd={passwd}")
+    passwd = str(
+        (user_doc.get("device_password") if user_doc else None) or enroll.get("passwd") or ""
+    )
     card = str(enroll.get("card") or "").strip()
-    parts.append(f"Card={'' if card == '0' else card}")
+    card = "" if card == "0" else card
+
+    if device and _uses_new_user_verb(device):
+        # New firmware (ZAM180/ZAM230): `DATA UPDATE user`, not USERINFO. The
+        # default access group is 1; an empty CardNo/Password is valid.
+        return "\t".join(
+            [
+                f"C:{cmd_id}:DATA UPDATE user CardNo={card}",
+                f"Pin={pin}",
+                f"Password={passwd}",
+                "Group=1",
+                "StartTime=0",
+                "EndTime=0",
+                f"Name={name}",
+                f"Privilege={_zk_pri(user_doc)}",
+                "Disable=0",
+                "Verify=0",
+            ]
+        )
+
+    # Classic firmware: the verb is followed by a SPACE, then tab-separated
+    # fields. A tab immediately after USERINFO is read as part of the verb.
+    parts = [f"C:{cmd_id}:DATA UPDATE USERINFO PIN={pin}", f"Name={name}", f"Pri={_zk_pri(user_doc)}"]
+    if passwd:
+        parts.append(f"Passwd={passwd}")
+    parts.append(f"Card={card}")
     return "\t".join(parts)
 
 
@@ -419,9 +449,19 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
     name = user_doc.employee_name or user_doc.device_user_name or ""
 
     if cmd_doc.command_type == "Delete User":
+        if _uses_new_user_verb(cmd_doc.attendance_device):
+            return f"C:{cmd_id}:DATA DELETE user Pin={pin}"
         return f"C:{cmd_id}:DATA DELETE USERINFO PIN={pin}"
 
     if cmd_doc.command_type == "Get Enroll Data":
+        if _uses_new_user_verb(cmd_doc.attendance_device):
+            _finish(
+                cmd_doc,
+                "Failed",
+                "This firmware rejects per-user DATA QUERY (-629). "
+                "Use Device > Sync Enrollments (bulk CHECK) or provision a template.",
+            )
+            return None
         # Classic ADMS dialect. USERINFO returns the profile; the fingerprint table
         # is FINGERTMP (the same name the working DATA UPDATE uses) — NOT `FPTMP`,
         # which returns Return=-1004 ("table not supported") on this firmware.
@@ -443,7 +483,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         return "\n".join(lines)
 
     if cmd_doc.command_type == "Update User":
-        return _zk_userinfo(cmd_id, pin, name, user_doc)
+        return _zk_userinfo(cmd_id, pin, name, user_doc, device=cmd_doc.attendance_device)
 
     if cmd_doc.command_type == "Enroll User":
         blob = _load_blob(user_doc.zkteco_enroll_data)
@@ -474,7 +514,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             _raw = _s.get("enforce_fp_version_match")
             enforce = 1 if _raw is None else cint(_raw)  # default ON when unset
 
-            lines = [_zk_userinfo(cmd_id, pin, name, user_doc, enroll)]
+            lines = [_zk_userinfo(cmd_id, pin, name, user_doc, enroll, device=cmd_doc.attendance_device)]
             skipped = []
             for bio in enroll.get("biometrics", []):
                 btype = bio.get("type", 1)
@@ -588,7 +628,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         elif enroll and "fid" in enroll:
             # Intermediate format — single FP JSON {"fid", "size", "tmp"}
             lines = [
-                _zk_userinfo(cmd_id, pin, name, user_doc),
+                _zk_userinfo(cmd_id, pin, name, user_doc, device=cmd_doc.attendance_device),
                 f"C:{cmd_id}:DATA UPDATE BIODATA\tPIN={pin}\tFID={enroll['fid']}\tSize={enroll['size']}\tValid=1\tTMP={enroll['tmp']}",
             ]
             return "\n".join(lines)
@@ -598,7 +638,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             size = len(base64.b64decode(tmp + "=="))
             return "\n".join(
                 [
-                    _zk_userinfo(cmd_id, pin, name, user_doc),
+                    _zk_userinfo(cmd_id, pin, name, user_doc, device=cmd_doc.attendance_device),
                     f"C:{cmd_id}:DATA UPDATE BIODATA\tPIN={pin}\tFID=0\tSize={size}\tValid=1\tTMP={tmp}",
                 ]
             )
