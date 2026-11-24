@@ -21,11 +21,16 @@ after_migrate = ["biometric_integration.utils.installation.after_migrate"]
 
 # --- Scheduled Tasks ---
 scheduler_events = {
+    "hourly": [
+        # Transient insert failures (deadlock, validation) get a bounded retry.
+        "biometric_integration.services.punch_inbox.retry_failed_punches",
+    ],
     "daily": [
         "biometric_integration.services.command_processor.force_close_stale_commands",
         "biometric_integration.services.command_processor.purge_completed_commands",
         "biometric_integration.services.command_processor.resync_pending_command_flags",
         "biometric_integration.services.user_sync.reconcile_daily",
+        "biometric_integration.services.punch_inbox.purge_ingested_punches",
     ],
 }
 

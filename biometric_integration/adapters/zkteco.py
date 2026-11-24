@@ -39,8 +39,13 @@ from biometric_integration.biometric_integration.doctype.attendance_device_user.
     get_or_create_user_by_pin,
     update_zkteco_enrollment,
 )
-from biometric_integration.services.checkin import create_employee_checkin
+from biometric_integration.services.checkin import (
+    RESULT_FAILED,
+    RESULT_UNMAPPED,
+    create_employee_checkin,
+)
 from biometric_integration.services.command_processor import process_device_command
+from biometric_integration.services.punch_inbox import record_unprocessed_punch
 from biometric_integration.utils.device_cache import (
     get_employee_by_pin,
     is_registered_device,
@@ -178,11 +183,13 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                 sn or "unknown",
                 "Error",
                 "IN",
-                f"Data from unregistered device SN={sn} (table={table}) — ignored",
+                f"Data from unregistered device SN={sn} (table={table}) — rejected",
                 raw_data=self.raw_dump(),
                 force=True,
             )
-            return self.text("ERROR: Device not registered.")
+            # 403 (not 200): a 200 tells some firmware the upload was accepted,
+            # so it advances past a buffer the server never stored.
+            return self.text("ERROR: Device not registered.", 403)
 
         # The device's own upload cursor. We echo it back on the next handshake so
         # it only re-sends NEW records instead of its whole history every time.
@@ -245,13 +252,27 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                 log_id = int(parts[7]) if len(parts) > 7 and parts[7].isdigit() else 0
 
                 ts = _localize_device_timestamp(datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M:%S"), sn)
-                create_employee_checkin(
+                outcome = create_employee_checkin(
                     device_pin=pin,
                     timestamp=ts,
                     device_id=sn,
                     log_type=log_type,
                     biometric_method=biometric_method,
                 )
+                if outcome in (RESULT_UNMAPPED, RESULT_FAILED):
+                    # The device is allowed to advance its cursor (otherwise one
+                    # bad record wedges the queue), so keep the punch here for
+                    # mapping/replay instead of letting it disappear.
+                    record_unprocessed_punch(
+                        device_sn=sn,
+                        pin=str(pin),
+                        punch_time=ts,
+                        raw_time=time_str.strip(),
+                        log_type=log_type,
+                        biometric_method=biometric_method,
+                        raw_line=line,
+                        outcome=outcome,
+                    )
                 maybe_log(
                     sn,
                     "Attendance",
@@ -287,13 +308,24 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             log_type = "OUT" if str(inout).strip() == "1" else "IN"
             biometric_method = _verify_code_to_method(data.get("verifytype") or data.get("Verifytype", ""))
             ts = _localize_device_timestamp(datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M:%S"), sn)
-            create_employee_checkin(
+            outcome = create_employee_checkin(
                 device_pin=pin,
                 timestamp=ts,
                 device_id=sn,
                 log_type=log_type,
                 biometric_method=biometric_method,
             )
+            if outcome in (RESULT_UNMAPPED, RESULT_FAILED):
+                record_unprocessed_punch(
+                    device_sn=sn,
+                    pin=str(pin),
+                    punch_time=ts,
+                    raw_time=time_str.strip(),
+                    log_type=log_type,
+                    biometric_method=biometric_method,
+                    raw_line=body,
+                    outcome=outcome,
+                )
             maybe_log(
                 sn,
                 "Attendance",
@@ -352,7 +384,7 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         """
         sn0 = args.get("SN") or args.get("sn")
         if not is_registered_device(sn0):
-            return self.text("ERROR: Device not registered.")
+            return self.text("ERROR: Device not registered.", 403)
 
         table = args.get("tablename", "")
         cmd_id = args.get("cmdid")
@@ -389,7 +421,9 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                     frappe.db.commit()
                 except Exception:
                     pass
-            return self.text(f"biophoto={n}")
+            # Echo the table name the device asked for (see the tabledata note
+            # above): "biophoto=" here makes the firmware retry forever.
+            return self.text(f"biodata={n}")
 
         if table != "user":
             return self.text(f"{table}={count_str}")
@@ -446,7 +480,7 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         # templates + PII, so an unregistered/forged serial must never be able to
         # poll them out of the queue.
         if not is_registered_device(sn):
-            return self.text("ERROR: Device not registered.")
+            return self.text("ERROR: Device not registered.", 403)
         command_str = process_device_command(sn)
         if command_str:
             maybe_log(sn, "Command", "OUT", f"Sending command to {sn}", raw_data=command_str)
@@ -467,11 +501,12 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         """
         sn = args.get("SN") or args.get("sn")
         if not is_registered_device(sn):
-            return self.text("ERROR: Device not registered.")
+            return self.text("ERROR: Device not registered.", 403)
         body_str = self.raw_body.decode("utf-8", errors="ignore")
 
         results = []  # [cmd_id, return_code, lines]
-        for line in body_str.strip().split("\n"):
+        for line in body_str.strip().splitlines():
+            line = line.strip()  # CRLF: "Return=0\r" must not read as failure
             params = parse_qs(line)
             cmd_id = (params.get("ID") or [None])[0]
             if cmd_id:
@@ -500,7 +535,14 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             return
         result = "\n".join(lines)
         cmd_doc.device_response = f"{cmd_doc.device_response or ''}\n{result}".strip()
-        cmd_doc.status = "Success" if return_code == "0" else "Failed"
+        # DATA QUERY answers with a record COUNT (0 is a valid, successful
+        # answer); update/delete verbs answer with a status where 0 is success.
+        # A multi-line command shares one id, so a later optional query being
+        # rejected must not downgrade an earlier success.
+        if _return_code_is_success(cmd_doc.command_type, return_code):
+            cmd_doc.status = "Success"
+        elif cmd_doc.status != "Success":
+            cmd_doc.status = "Failed"
         cmd_doc.closed_on = frappe.utils.now_datetime()
         cmd_doc.save()
         if cmd_doc.command_type == "Refresh Device Info":
@@ -512,6 +554,24 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+# Commands whose `Return=` is a record count, not a status code. For these,
+# zero and every positive number are success; only a negative value is a
+# refusal ("table not supported", "no such user", ...).
+_COUNT_RETURN_COMMANDS = {"Get Enroll Data", "Sync User List", "Pull From Device"}
+
+
+def _return_code_is_success(command_type: str, return_code: str | None) -> bool:
+    try:
+        code = int(str(return_code).strip())
+    except (TypeError, ValueError):
+        return False
+    if code < 0:
+        return False
+    if command_type in _COUNT_RETURN_COMMANDS:
+        return True
+    return code == 0
+
 
 # ZKTeco privilege byte -> Attendance Device User.privilege label. Mirrors
 # _ZK_PRI in services/command_processor.py, which maps the label back for pushes.
@@ -617,10 +677,13 @@ def _handle_operlog_user(sn: str, line: str) -> int:
     user_doc.save(ignore_permissions=True)
     frappe.db.commit()
 
-    # Persist card and password into enrollment JSON
-    card = data.get("Card") or data.get("CardNo") or "0"
-    passwd = data.get("Passwd") or data.get("Password") or ""
-    update_zkteco_enrollment(user_doc, sn, card=card, passwd=passwd)
+    # Persist card and password into enrollment JSON. Only when the record
+    # actually carries them: defaulting to "0"/"" here erased a locally enrolled
+    # card or keypad password whenever firmware omitted the optional fields.
+    card = data.get("Card") or data.get("CardNo")
+    passwd = data.get("Passwd") or data.get("Password")
+    if card is not None or passwd is not None:
+        update_zkteco_enrollment(user_doc, sn, card=card, passwd=passwd)
 
     maybe_log(sn, "Enrollment", "IN", f"USER PIN={pin} Name={name}", user_pin=pin)
     return 1

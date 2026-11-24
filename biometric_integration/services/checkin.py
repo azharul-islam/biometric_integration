@@ -16,16 +16,30 @@ import frappe
 from biometric_integration.utils.device_cache import get_employee_by_pin
 
 
+# Outcomes returned to the device adapters. A punch is only "stored" when an
+# Employee Checkin exists (new or already present). "unmapped" and "failed" are
+# recorded in Attendance Punch so nothing is lost when the device moves its
+# cursor past this batch.
+RESULT_STORED = "stored"
+RESULT_DUPLICATE = "duplicate"
+RESULT_UNMAPPED = "unmapped"
+RESULT_FAILED = "failed"
+
+
 def create_employee_checkin(
     device_pin: str,
     timestamp: datetime,
     device_id: str | None = None,
     log_type: str | None = None,
     biometric_method: str | None = None,
-) -> bool:
+) -> str:
     """Create an Employee Checkin from a device attendance event.
 
-    Returns True on success or a duplicate (idempotent), False on failure.
+    Returns one of RESULT_STORED / RESULT_DUPLICATE / RESULT_UNMAPPED /
+    RESULT_FAILED. Callers should treat stored and duplicate as success, and
+    record the other two in Attendance Punch so the punch can be replayed after
+    the PIN is mapped or the transient error clears.
+
     Also queues a Get Enroll Data command if this PIN has no user record yet,
     so biometrics are lazily synced on the first punch.
     """
@@ -36,7 +50,7 @@ def create_employee_checkin(
             settings = frappe.get_cached_doc("Attendance Integration Settings")
             if not settings.create_checkin_for_unknown_pin:
                 _ensure_device_user_synced(str(device_pin), device_id)
-                return False
+                return RESULT_UNMAPPED
             # Proceed with blank employee if setting allows it
 
         # Duplicate pre-check: devices re-send logs after a missed ack, and the
@@ -46,7 +60,7 @@ def create_employee_checkin(
         if employee_id and frappe.db.exists(
             "Employee Checkin", {"employee": employee_id, "time": timestamp}
         ):
-            return True  # duplicate — treat as success
+            return RESULT_DUPLICATE  # already stored — treat as success
 
         checkin = frappe.new_doc("Employee Checkin")
         checkin.employee = employee_id
@@ -67,18 +81,20 @@ def create_employee_checkin(
         frappe.db.commit()
 
         _ensure_device_user_synced(str(device_pin), device_id)
-        return True
+        return RESULT_STORED
 
     except frappe.exceptions.ValidationError as ve:
         if "already has a log with the same timestamp" in str(ve):
-            return True  # duplicate — treat as success
+            frappe.db.rollback()
+            return RESULT_DUPLICATE  # duplicate — treat as success
+        frappe.db.rollback()
         frappe.log_error(
             title="Checkin Validation Error",
             message=frappe.get_traceback(),
             reference_doctype="Employee",
             reference_name=locals().get("employee_id"),
         )
-        return False
+        return RESULT_FAILED
 
     except Exception:
         frappe.db.rollback()
@@ -86,7 +102,7 @@ def create_employee_checkin(
             title="Failed to Create Employee Checkin",
             message=frappe.get_traceback(),
         )
-        return False
+        return RESULT_FAILED
 
 
 def _ensure_device_user_synced(pin: str, device_id: str | None) -> None:

@@ -20,6 +20,9 @@ class AttendanceDevice(Document):
         _enqueue_initial_enrollments(self)
 
     def on_update(self):
+        # Registration now depends on `disabled`, so every save drops the cache:
+        # enabling takes effect on the next poll, disabling stops it immediately.
+        invalidate_device_cache(self.name)
         before = self.get_doc_before_save()
         if before and before.disabled and not self.disabled:
             _enqueue_initial_enrollments(self)

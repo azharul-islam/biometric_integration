@@ -37,8 +37,13 @@ import frappe
 from werkzeug.wrappers import Response
 
 from biometric_integration.adapters.base import AbstractDeviceAdapter
-from biometric_integration.services.checkin import create_employee_checkin
+from biometric_integration.services.checkin import (
+    RESULT_FAILED,
+    RESULT_UNMAPPED,
+    create_employee_checkin,
+)
 from biometric_integration.services.command_processor import process_device_command
+from biometric_integration.services.punch_inbox import record_unprocessed_punch
 from biometric_integration.biometric_integration.doctype.attendance_device_user.attendance_device_user import (
     get_or_create_user_by_pin,
     save_enrollment_data,
@@ -196,13 +201,24 @@ def _handle_realtime_glog(payload: dict, ctx: dict) -> Reply:
         except Exception:
             biometric_method = None
 
-        create_employee_checkin(
+        outcome = create_employee_checkin(
             device_pin=user_id,
             timestamp=ts,
             device_id=dev_id,
             log_type=log_type,
             biometric_method=biometric_method,
         )
+        if outcome in (RESULT_UNMAPPED, RESULT_FAILED):
+            record_unprocessed_punch(
+                device_sn=dev_id,
+                pin=str(user_id),
+                punch_time=ts,
+                raw_time=raw_time,
+                log_type=log_type,
+                biometric_method=biometric_method,
+                raw_line=str(payload)[:60000],
+                outcome=outcome,
+            )
         maybe_log(dev_id, "Attendance", "IN", f"PIN={user_id} {log_type} at {ts}",
                   user_pin=user_id, raw_data=ctx.get("raw_dump"))
         return (_ok_bytes(), 200, _resp_headers(trans_id=trans_id))

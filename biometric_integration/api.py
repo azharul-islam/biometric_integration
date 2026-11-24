@@ -8,6 +8,8 @@ Device traffic is handled by renderers.py (page_renderer hook), NOT here.
 
 from __future__ import annotations
 
+import json
+
 import frappe
 from frappe.utils import cint, get_url
 
@@ -254,6 +256,26 @@ def enqueue_user_deletions(user_id: str) -> str:
     for device_id, brand in devices.items():
         add_command(device_id, user_doc.name, brand, "Delete User")
     return f"Queued {len(devices)} Delete User command(s)."
+
+
+@frappe.whitelist(methods=["POST"])
+def retry_punches(names) -> dict:
+    """Retry failed/unmapped punches from the Attendance Punch inbox."""
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.punch_inbox import retry_punch
+
+    if isinstance(names, str):
+        names = json.loads(names)
+    return {name: retry_punch(name) for name in (names or [])}
+
+
+@frappe.whitelist(methods=["POST"])
+def map_pin_and_replay(pin: str, employee: str) -> dict:
+    """Map an unmapped PIN to an Employee and replay its waiting punches."""
+    frappe.only_for(["System Manager", "HR Manager"])
+    from biometric_integration.services.punch_inbox import map_pin_and_replay as _replay
+
+    return _replay(pin, employee)
 
 
 def attendance_device_companies() -> list[str]:

@@ -195,11 +195,16 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
                 "cmd_code": "SET_TIME",
                 "body": json.dumps({"time": time_str}),
             }
-        # ZKTeco devices sync clock via /iclock/rtdata?type=time on their own
-        # cadence — there is no out-of-band SET_TIME equivalent. Mark Success
-        # so the user gets feedback instead of a stuck command.
-        _finish(cmd_doc, "Success", "ZKTeco devices auto-sync via /iclock/rtdata; no command sent.")
-        return None
+        # ZKTeco has no passive clock sync we can rely on: /iclock/rtdata is
+        # only called by firmware that chooses to, and this fleet does not. The
+        # PUSH protocol does carry a clock command (SET OPTIONS DateTime=), so
+        # send it instead of pretending success. The value is GMT in ZKTeco's
+        # packed seconds-since-2000 format (PUSH SDK Appendix 5).
+        now = _utc_now()
+        packed = _zkteco_encode_time(now)
+        when = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+        _finish(cmd_doc, "Success", f"Sent SET OPTIONS DateTime={packed} ({when})")
+        return f"C:{cmd_doc.name}:SET OPTIONS DateTime={packed}"
 
     if cmd_doc.command_type == "Re-pull Attendance":
         # Ask the device to re-upload stored attendance logs for a date range.
@@ -311,6 +316,88 @@ _ZK_PRI = {"Normal User": 0, "Enroller": 2, "Admin": 6, "Super Admin": 14}
 _EBKN_PRI = {"Normal User": 0, "Enroller": 1, "Admin": 2, "Super Admin": 3}
 
 
+def _utc_now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def _zkteco_encode_time(dt) -> int:
+    """ZKTeco's packed GMT timestamp (PUSH SDK Appendix 5)."""
+    y, mo, d, h, mi, s = dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+    return ((y - 2000) * 12 * 31 + (mo - 1) * 31 + d - 1) * 86400 + (h * 60 + mi) * 60 + s
+
+
+# Modalities that can be pushed to a device, by ZKTeco template type.
+_MODALITY_FOR_TYPE = {1: "Fingerprint", 2: "Face", 8: "Palm Vein", 9: "Face"}
+
+
+def _device_bio_labels(device: str) -> set[str]:
+    raw = (frappe.db.get_value("Attendance Device", device, "supported_biometrics") or "").strip()
+    if not raw or (":" in raw and not any(c.isalpha() for c in raw)):
+        # Empty, or a capability bitmap rather than a label list: no reliable
+        # modality info, so do not gate.
+        return set()
+    return {p.strip().lower() for p in raw.replace(":", ",").split(",") if p.strip()}
+
+
+def _device_supports_biometric(device: str, btype: int) -> bool:
+    labels = _device_bio_labels(device)
+    if not labels:
+        return True
+    return (_MODALITY_FOR_TYPE.get(btype) or "").lower() in labels
+
+
+def _device_bio_types(device: str) -> list[int]:
+    """Template types worth querying for this device. Type 1 (fingerprint) is
+    always asked; face and palm are added only when the device reports them."""
+    labels = _device_bio_labels(device)
+    types = [1]
+    if "face" in labels:
+        types += [2, 9]  # NIR face and visible-light face
+    if "palm vein" in labels or "palm" in labels:
+        types.append(8)
+    return types
+
+
+def _zk_enrollment(user_doc) -> dict:
+    """The stored enrollment JSON, or {} if this user has none."""
+    if not user_doc:
+        return {}
+    blob = _load_blob(user_doc.get("zkteco_enroll_data"))
+    if not blob:
+        return {}
+    try:
+        data = json.loads(blob.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None = None) -> str:
+    """Build a USERINFO update line without erasing credentials we already hold.
+
+    Card and password are optional on the wire. Sending Card=0 / Passwd= from a
+    fresh command used to wipe a card or keypad password that was enrolled on
+    the terminal. Only send what we actually know; keep writing the privilege so
+    a promotion is not silently undone.
+    """
+    enroll = enroll if enroll is not None else _zk_enrollment(user_doc)
+    parts = [
+        f"C:{cmd_id}:DATA UPDATE USERINFO",
+        f"PIN={pin}",
+        f"Name={name}",
+        f"Pri={_zk_pri(user_doc)}",
+    ]
+    passwd = (user_doc.get("device_password") if user_doc else None) or enroll.get("passwd") or ""
+    if str(passwd).strip():
+        parts.append(f"Passwd={passwd}")
+    card = str(enroll.get("card") or "").strip()
+    if card and card != "0":
+        parts.append(f"Card={card}")
+    return "\t".join(parts)
+
+
 def _zk_pri(user_doc) -> int:
     """Device privilege for this user, defaulting to a normal (non-admin) user."""
     return _ZK_PRI.get((user_doc.get("privilege") if user_doc else None) or "Normal User", 0)
@@ -318,13 +405,6 @@ def _zk_pri(user_doc) -> int:
 
 def _ebkn_pri(user_doc) -> int:
     return _EBKN_PRI.get((user_doc.get("privilege") if user_doc else None) or "Normal User", 0)
-
-
-def _zk_passwd(user_doc, fallback: str = "") -> str:
-    """Keypad password for this user. The field wins; otherwise keep whatever the
-    captured enrollment blob had. Sent on every USERINFO push — previously this was
-    hardcoded empty, so each sync wiped the user's device password."""
-    return str((user_doc.get("device_password") if user_doc else None) or fallback or "")
 
 
 def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
@@ -346,18 +426,18 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         # plus OPERLOGStamp=0; this per-user query is a targeted supplement.)
         lines = [f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}"]
         lines += [f"C:{cmd_id}:DATA QUERY FINGERTMP PIN={pin}\tFID={fid}" for fid in range(10)]
-        # Newer firmware (fp_version >= 10, e.g. the ZAM70 v13 fleet) stores a
-        # LOCALLY-enrolled fingerprint in the unified BIODATA table, which the
+        # Newer firmware (fp_version >= 10, e.g. the SpeedFace v13 fleet) stores
+        # locally-enrolled templates in the unified BIODATA table, which the
         # classic FINGERTMP sweep never surfaces (it returns Return=0 but empty).
-        # Also ask for BIODATA using the friendly `Type=<n>\tPIN=<pin>` form — the
-        # `tablename=biodata,filter=...` form returns Return=-1004 on this fleet.
-        # Classic devices reject this single line (-1004) harmlessly; v13 devices
-        # answer with the unified template (ingested by the biodata handlers).
-        lines.append(f"C:{cmd_id}:DATA QUERY BIODATA Type=1\tPIN={pin}")
+        # Ask for every modality the device reports — face and palm are the
+        # primary credentials on a V5L, and asking only for Type=1 captured
+        # nothing when staff enrolled a face.
+        for btype in _device_bio_types(cmd_doc.attendance_device):
+            lines.append(f"C:{cmd_id}:DATA QUERY BIODATA Type={btype}\tPIN={pin}")
         return "\n".join(lines)
 
     if cmd_doc.command_type == "Update User":
-        return f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri={_zk_pri(user_doc)}\tPasswd={_zk_passwd(user_doc)}\tCard=0"
+        return _zk_userinfo(cmd_id, pin, name, user_doc)
 
     if cmd_doc.command_type == "Enroll User":
         blob = _load_blob(user_doc.zkteco_enroll_data)
@@ -371,8 +451,6 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
 
         if enroll and enroll.get("version") == 2:
             # Current format — full JSON with all biometrics + credentials
-            card = enroll.get("card", "0")
-            passwd = enroll.get("passwd", "")
             # Version-match gate: a fingerprint template only matches on a device
             # whose FP algorithm version equals the version it was captured on.
             # target_fp = manual override if set, else the auto-detected version.
@@ -390,12 +468,19 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             _raw = _s.get("enforce_fp_version_match")
             enforce = 1 if _raw is None else cint(_raw)  # default ON when unset
 
-            lines = [
-                f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri={_zk_pri(user_doc)}\tPasswd={_zk_passwd(user_doc, passwd)}\tCard={card}",
-            ]
+            lines = [_zk_userinfo(cmd_id, pin, name, user_doc, enroll)]
             skipped = []
             for bio in enroll.get("biometrics", []):
                 btype = bio.get("type", 1)
+                # A face template pushed to a fingerprint-only BioPro (or a palm
+                # to a non-palm model) is rejected or stored unusable. The device
+                # tells us its modalities at registration; use that, not hope.
+                if not _device_supports_biometric(cmd_doc.attendance_device, btype):
+                    skipped.append(
+                        f"type={btype} ({_MODALITY_FOR_TYPE.get(btype, 'unsupported')} "
+                        f"not on this device)"
+                    )
+                    continue
                 if btype == 1:
                     # Fingerprint algorithm-version check. When the target version is
                     # known and the template was captured on a different version, the
@@ -477,13 +562,13 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
                         f"\ttmp={bio['tmp']}"
                     )
             if skipped:
-                # Record why fingerprints were withheld so the operator isn't left
-                # wondering why a "successful" enroll can't fingerprint-match. The
-                # device ack later appends its own result to this note.
+                # Record why templates were withheld so the operator isn't left
+                # wondering why a "successful" enroll can't match. The device ack
+                # later appends its own result to this note.
                 msg = (
-                    f"Skipped {len(skipped)} fingerprint(s) on version mismatch "
-                    f"(device fp_version={target_fp}): {', '.join(skipped)}. "
-                    f"User registered — enrol the finger directly on this device."
+                    f"Skipped {len(skipped)} template(s) not usable on this device "
+                    f"(fp_version={target_fp}): {', '.join(skipped)}. "
+                    f"User registered — enrol that credential directly on this device."
                 )
                 frappe.log_error(title="Biometric Enrollment Version Gate", message=msg)
                 try:
@@ -497,7 +582,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         elif enroll and "fid" in enroll:
             # Intermediate format — single FP JSON {"fid", "size", "tmp"}
             lines = [
-                f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri={_zk_pri(user_doc)}\tPasswd={_zk_passwd(user_doc)}\tCard=0",
+                _zk_userinfo(cmd_id, pin, name, user_doc),
                 f"C:{cmd_id}:DATA UPDATE BIODATA\tPIN={pin}\tFID={enroll['fid']}\tSize={enroll['size']}\tValid=1\tTMP={enroll['tmp']}",
             ]
             return "\n".join(lines)
@@ -507,7 +592,7 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             size = len(base64.b64decode(tmp + "=="))
             return "\n".join(
                 [
-                    f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri={_zk_pri(user_doc)}\tPasswd={_zk_passwd(user_doc)}\tCard=0",
+                    _zk_userinfo(cmd_id, pin, name, user_doc),
                     f"C:{cmd_id}:DATA UPDATE BIODATA\tPIN={pin}\tFID=0\tSize={size}\tValid=1\tTMP={tmp}",
                 ]
             )

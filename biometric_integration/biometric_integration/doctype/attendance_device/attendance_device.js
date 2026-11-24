@@ -144,7 +144,7 @@ frappe.ui.form.on('Attendance Device', {
 			});
 		}, __('Commands'));
 
-		if (frm.doc.brand === 'EBKN') {
+		{
 			frm.add_custom_button(__('Set Device Time'), () => {
 				const d = new frappe.ui.Dialog({
 					title: __('Set Device Time — {0}', [frm.doc.device_name || frm.doc.name]),
@@ -174,7 +174,7 @@ frappe.ui.form.on('Attendance Device', {
 							`<div class="text-center py-3">
 								<div class="text-success mb-1" style="font-size:2.5rem;">&#10003;</div>
 								<b>${__('Set Device Time command queued')}</b>
-								<div class="text-muted small mt-2">${__('The device clock will be set to {0} on its next handshake.', [tz])}</div>
+								<div class="text-muted small mt-2">${__('The clock is corrected to server time ({0}) on the next command poll — usually within 10 seconds.', [tz])}</div>
 							</div>`
 						);
 						setTimeout(() => d.hide(), 3000);

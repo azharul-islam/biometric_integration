@@ -84,9 +84,17 @@ def update_zkteco_enrollment(
     if biometric:
         bio_type = biometric.get("type", 1)
         bio_no = biometric.get("no", 0)
+        bio_index = biometric.get("index", 0)
         updated = False
         for i, b in enumerate(existing["biometrics"]):
-            if b.get("type") == bio_type and b.get("no") == bio_no:
+            # Index identifies the template slot within a modality (several face
+            # or palm templates share the same `no`); keying on (type, no) alone
+            # made the second one overwrite the first.
+            if (
+                b.get("type") == bio_type
+                and b.get("no") == bio_no
+                and b.get("index", 0) == bio_index
+            ):
                 existing["biometrics"][i] = biometric
                 updated = True
                 break

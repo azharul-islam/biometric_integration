@@ -27,14 +27,17 @@ _TTL_PIN_TO_EMPLOYEE = 300   # employee mapping changes rarely
 # ── Device registration ──────────────────────────────────────────────────────
 
 def is_registered_device(sn: str) -> bool:
-    """Return True if sn exists in Attendance Device, using Redis cache."""
+    """Return True if sn exists in Attendance Device and is not disabled."""
     if not sn:
         return False
     key = f"biometric:device_exists:{sn}"
     cached = frappe.cache.get_value(key)
     if cached is not None:
         return cached == "1"
-    exists = bool(frappe.db.exists("Attendance Device", sn))
+    disabled = frappe.db.get_value("Attendance Device", sn, "disabled")
+    # None = no such device. A disabled unit must stop being served: otherwise
+    # an RMA'd or retired terminal keeps uploading punches and polling commands.
+    exists = disabled is not None and not int(disabled or 0)
     frappe.cache.set_value(key, "1" if exists else "0", expires_in_sec=_TTL_DEVICE_EXISTS)
     return exists
 
