@@ -72,6 +72,17 @@ def validate_employee(doc, method=None) -> None:
     """
     doc.flags.biometric_targets = _resolve_target_devices(doc)
     pin = _pin(doc)
+    if pin:
+        other = frappe.db.get_value(
+            "Employee", {"attendance_device_id": str(pin)}, "name"
+        )
+        if other and other != doc.name:
+            frappe.throw(
+                frappe._(
+                    "Attendance Device ID {0} is already assigned to Employee {1}."
+                ).format(pin, other),
+                title=frappe._("Duplicate Device ID"),
+            )
     if not pin or pin.isdigit() or not doc.flags.biometric_targets:
         return
     frappe.throw(
@@ -96,6 +107,14 @@ def on_employee_update(doc, method=None) -> None:
         for pin in (pin_before, pin_after):
             if pin:
                 invalidate_employee_pin(pin)
+
+    # Keep the device-side record linked the other way too, so editing either
+    # form is enough to map (or unmap) a person.
+    from biometric_integration.services.user_mapping import (
+        sync_device_user_from_employee,
+    )
+
+    sync_device_user_from_employee(doc, pin_before, pin_after)
 
     # --- Status / name changes on devices the person is already on ---
     if before:

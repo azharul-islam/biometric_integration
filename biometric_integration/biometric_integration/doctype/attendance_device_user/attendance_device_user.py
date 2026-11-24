@@ -24,16 +24,29 @@ _BRAND_BLOB_FIELD: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 def get_or_create_user_by_pin(pin: str, name: Optional[str] = None) -> "AttendanceDeviceUser":
-    """Return an AttendanceDeviceUser by PIN, creating one if it does not exist."""
+    """Return an AttendanceDeviceUser by PIN, creating one if it does not exist.
+
+    ``name`` is the name the device reports for the user (the one typed on the
+    terminal). It is stored in ``device_user_name`` and kept separate from
+    ``employee_name``, which is the linked ERPNext Employee's name.
+    """
     if not pin:
         raise ValueError("PIN cannot be empty.")
     doc_name = frappe.db.exists("Attendance Device User", {"user_id": pin})
     if doc_name:
-        return frappe.get_doc("Attendance Device User", doc_name)
+        doc = frappe.get_doc("Attendance Device User", doc_name)
+        if name and (doc.device_user_name or "") != name:
+            doc.device_user_name = name
+            doc.display_name = (
+                name or doc.employee_name or doc.user_id or ""
+            ).strip()
+            doc.save(ignore_permissions=True)
+            frappe.db.commit()
+        return doc
     doc = frappe.new_doc("Attendance Device User")
     doc.user_id = pin
-    if name:
-        doc.employee_name = name
+    doc.device_user_name = name or None
+    doc.display_name = (name or pin or "").strip()
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     return doc
@@ -245,16 +258,59 @@ def _write_enrollment_file(
 # ---------------------------------------------------------------------------
 
 class AttendanceDeviceUser(Document):
+    def validate(self):
+        self.set_display_name()
+        self.validate_employee_mapping()
+
     def after_insert(self):
         _trigger_sync(self, is_new=True)
+        _sync_employee_mapping(self)
 
     def on_update(self):
         _trigger_sync(self, is_new=False)
+        _sync_employee_mapping(self)
 
     def on_trash(self):
+        _clear_employee_mapping(self)
         for device_id, brand in _get_user_devices(self).items():
             add_command(device_id, self.name, brand, "Delete User")
         frappe.db.commit()
+
+    def set_display_name(self) -> None:
+        """Title = device name, falling back to the linked employee, then the PIN."""
+        if self.employee:
+            self.employee_name = (
+                frappe.db.get_value("Employee", self.employee, "employee_name")
+                or self.employee_name
+            )
+        else:
+            # Do not leave a stale employee name behind after unmapping.
+            self.employee_name = None
+        self.display_name = (
+            self.device_user_name or self.employee_name or self.user_id or ""
+        ).strip()
+
+    def validate_employee_mapping(self) -> None:
+        """Keep one PIN per employee and one employee per PIN."""
+        if not self.employee:
+            return
+        emp_pin = frappe.db.get_value("Employee", self.employee, "attendance_device_id")
+        if emp_pin and str(emp_pin) != str(self.user_id):
+            frappe.throw(
+                frappe._(
+                    "Employee {0} already has Attendance Device ID {1}. "
+                    "Clear it before linking PIN {2}."
+                ).format(self.employee, emp_pin, self.user_id)
+            )
+        other = frappe.db.get_value(
+            "Employee", {"attendance_device_id": str(self.user_id)}, "name"
+        )
+        if other and other != self.employee:
+            frappe.throw(
+                frappe._("PIN {0} is already assigned to Employee {1}.").format(
+                    self.user_id, other
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +324,23 @@ def _trigger_sync(doc: "AttendanceDeviceUser", is_new: bool) -> None:
         if before:
             _sync_on_device_list_change(doc, before)
             _sync_on_employee_link(doc, before)
+
+
+def _sync_employee_mapping(doc: "AttendanceDeviceUser") -> None:
+    """Write the PIN to Employee.attendance_device_id (the check-in lookup)."""
+    from biometric_integration.services.user_mapping import (
+        sync_employee_from_device_user,
+    )
+
+    sync_employee_from_device_user(doc)
+
+
+def _clear_employee_mapping(doc: "AttendanceDeviceUser") -> None:
+    from biometric_integration.services.user_mapping import (
+        clear_employee_for_device_user,
+    )
+
+    clear_employee_for_device_user(doc)
 
 
 def _sync_on_enrollment_change(doc: "AttendanceDeviceUser") -> None:
