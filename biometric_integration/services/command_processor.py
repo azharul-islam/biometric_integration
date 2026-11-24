@@ -388,9 +388,11 @@ def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None
     # `Pri=`; the working form is `Privilege=` with an explicit `Card=` (empty
     # when the user has none). Verified against the SpeedFace PUSH reference
     # implementation and the pilot V5L.
+    # The verb is followed by a SPACE, then tab-separated fields — this is the
+    # layout used by the working SpeedFace implementation. A tab immediately
+    # after USERINFO is parsed as part of the verb and answered -629.
     parts = [
-        f"C:{cmd_id}:DATA UPDATE USERINFO",
-        f"PIN={pin}",
+        f"C:{cmd_id}:DATA UPDATE USERINFO PIN={pin}",
         f"Name={name}",
         f"Privilege={_zk_pri(user_doc)}",
     ]
