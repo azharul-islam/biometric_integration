@@ -60,8 +60,9 @@ const TP_TEMPLATE = `
 					<button class="btn btn-xs btn-default tp-refresh">Refresh</button>
 				</div>
 				<p class="text-muted small mt-2 mb-2">
-					<b>Capture</b> pulls templates off a terminal after you enrol people on it.
-					<b>Push</b> copies stored templates to the other terminal.
+					Enrolling a person on a terminal uploads their template automatically.
+					<b>Push</b> copies the stored template to the other terminal. <b>Bulk</b> is a
+					replay fallback for firmware that needs one.
 				</p>
 				<div class="tp-actions mb-3"></div>
 				<div class="tp-roster text-muted small">Provision someone to see the roster.</div>
@@ -141,6 +142,7 @@ Object.assign(frappe.pages["team-provisioning"], {
 					<input type="checkbox" class="tp-device mr-2" value="${frappe.utils.escape_html(d.name)}" ${i < 2 ? "checked" : ""}>
 					<span>${frappe.utils.escape_html(d.device_name || d.name)}
 						<span class="text-muted">· ${frappe.utils.escape_html(d.company || "")}</span>
+						${d.max_users ? `<span class="text-muted">· max ${d.max_users} users</span>` : ""}
 						${d.disable_employee_sync ? `<span class="text-danger">· sync off</span>` : ""}</span>
 				</label>`
 				)
@@ -178,7 +180,7 @@ Object.assign(frappe.pages["team-provisioning"], {
 						<select class="form-control tp-capture-device">${opts}</select>
 						<div class="input-group-append">
 							<button class="btn btn-default tp-capture-all" title="Ask the terminal to replay all users and templates">Bulk</button>
-							<button class="btn btn-default tp-capture-missing" title="One query per user without a stored template">Missing</button>
+							<button class="btn btn-default tp-capture-missing" title="Only for firmware that answers per-user queries">Missing</button>
 						</div>
 					</div>
 				</div>

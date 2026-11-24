@@ -53,6 +53,7 @@ def get_context() -> dict:
             "device_timezone",
             "last_contact",
             "disable_employee_sync",
+            "max_users",
         ],
         order_by="device_name asc",
     )
@@ -478,6 +479,16 @@ def capture_all(device: str) -> dict:
 
 def capture_missing(device: str) -> dict:
     """Per-user Get Enroll Data for assigned users with no stored template."""
+    from biometric_integration.services.command_processor import _uses_new_user_verb
+
+    if _uses_new_user_verb(device):
+        frappe.throw(
+            frappe._(
+                "This SpeedFace firmware rejects per-user template queries (-629). "
+                "Enrol the person on the terminal — the template uploads automatically — "
+                "then use Push to copy it to the other terminal."
+            )
+        )
     brand = frappe.db.get_value("Attendance Device", device, "brand")
     users = _assigned_users([device])
     queued = 0
