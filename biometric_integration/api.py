@@ -258,6 +258,70 @@ def enqueue_user_deletions(user_id: str) -> str:
     return f"Queued {len(devices)} Delete User command(s)."
 
 
+@frappe.whitelist()
+def get_provisioning_context() -> dict:
+    """Bootstrap data for the Team Provisioning page."""
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import get_context
+
+    return get_context()
+
+
+@frappe.whitelist(methods=["POST"])
+def preview_provisioning(raw, devices, company, allow_incomplete=0) -> dict:
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import build_plan
+
+    return build_plan(raw, devices, company, bool(cint(allow_incomplete)))
+
+
+@frappe.whitelist(methods=["POST"])
+def provision_team(raw, devices, company, date_of_joining=None, branch=None, allow_incomplete=0) -> dict:
+    frappe.only_for(["System Manager", "HR Manager"])
+    from biometric_integration.services.provisioning import provision
+
+    return provision(
+        raw,
+        devices,
+        company,
+        date_of_joining=date_of_joining,
+        branch=branch,
+        allow_incomplete=bool(cint(allow_incomplete)),
+    )
+
+
+@frappe.whitelist()
+def get_provisioning_roster(devices) -> dict:
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import get_roster
+
+    return get_roster(devices)
+
+
+@frappe.whitelist(methods=["POST"])
+def capture_device_templates(device: str) -> dict:
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import capture_all
+
+    return capture_all(device)
+
+
+@frappe.whitelist(methods=["POST"])
+def capture_missing_templates(device: str) -> dict:
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import capture_missing
+
+    return capture_missing(device)
+
+
+@frappe.whitelist(methods=["POST"])
+def push_templates(device: str, only_missing=1) -> dict:
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.provisioning import push_templates as _push
+
+    return _push(device, only_missing=bool(cint(only_missing)))
+
+
 @frappe.whitelist(methods=["POST"])
 def retry_punches(names) -> dict:
     """Retry failed/unmapped punches from the Attendance Punch inbox."""
