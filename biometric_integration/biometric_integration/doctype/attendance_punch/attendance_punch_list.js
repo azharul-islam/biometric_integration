@@ -46,9 +46,7 @@ frappe.listview_settings["Attendance Punch"] = {
 						options: "Employee",
 						label: __("Employee"),
 						reqd: 1,
-						get_query: () => ({
-							filters: { status: "Active", attendance_device_id: ["in", ["", null]] },
-						}),
+						get_query: () => ({ filters: { status: "Active" } }),
 					},
 				],
 				primary_action_label: __("Map & Replay"),
