@@ -186,12 +186,13 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         # `DATA QUERY USERINFO` with -629. It is the same split as DATA UPDATE
         # (`user` vs `USERINFO`), so select on the same signal.
         #
-        # This is the only way to read back a name typed on the keypad. Those units do
-        # not push the user table unprompted and every per-user query is rejected, so
-        # without it the device's own names never reach ERPNext and every person has
-        # to be matched to a bare PIN by hand.
+        # Tested on the pilot ZAM230 (2026-11-25): `DATA QUERY user` also returns
+        # -629. This firmware answers no query form at all, so the name typed on the
+        # keypad cannot be pulled — see docs/vendor/zkteco/protocol/adms-push.md.
+        # The dialect still matters for firmware that does serve the lowercase table,
+        # and a rejection fails the same way it did before, so nothing is lost here.
         #
-        # The device answers with `tabledata&tablename=user`, which
+        # When a device does answer, it uploads `tabledata&tablename=user`, which
         # _process_user_records already parses into Attendance Device User.
         if _uses_new_user_verb(device_sn):
             return f"C:{cmd_doc.name}:DATA QUERY user"

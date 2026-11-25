@@ -39,6 +39,9 @@
   "fp_version",
   "fp_version_override",
   "device_timezone",
+  "section_site",
+  "site",
+  "unit",
   "section_assignment",
   "company",
   "project",
@@ -300,6 +303,25 @@
    "fieldtype": "Small Text",
    "label": "Health Note",
    "read_only": 1
+  },
+  {
+   "fieldname": "section_site",
+   "fieldtype": "Section Break",
+   "label": "Site"
+  },
+  {
+   "fieldname": "site",
+   "fieldtype": "Data",
+   "label": "Site",
+   "in_standard_filter": 1,
+   "in_list_view": 1,
+   "description": "Where this terminal physically is. Used to group devices and to filter check-ins; not part of the device's identity."
+  },
+  {
+   "fieldname": "unit",
+   "fieldtype": "Data",
+   "label": "Unit",
+   "description": "Short label for this unit within the site, e.g. A or B. Two terminals at one entrance are usually A and B."
   }
  ],
  "index_web_pages_for_search": 1,
@@ -309,7 +331,7 @@
    "link_fieldname": "attendance_device"
   }
  ],
- "modified": "2026-11-25 18:45:00.000000",
+ "modified": "2026-11-25 19:35:00.000000",
  "modified_by": "Administrator",
  "module": "Biometric Integration",
  "name": "Attendance Device",
