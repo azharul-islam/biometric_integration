@@ -688,12 +688,12 @@ def _handle_operlog_user(sn: str, line: str) -> int:
     and adds this device to the user's device list.
     Returns 1 on success, 0 on skip.
     """
-    data = _parse_kv(line)
-    pin = data.get("PIN")
+    data = _parse_kv_spaced(line)
+    pin = data.get("pin")
     if not pin:
         return 0
 
-    name = data.get("Name") or data.get("name")
+    name = data.get("name") or data.get("username")
     user_doc = get_or_create_user_by_pin(pin, name)
 
     # Ensure this device is in the user's device list
@@ -714,7 +714,7 @@ def _handle_operlog_user(sn: str, line: str) -> int:
     # 38-device fleet ended up with no admin at all, leaving every device menu
     # open to anyone (reported Sep 2026). Capturing it makes the device the
     # source of truth for a promotion done locally.
-    pri = data.get("Pri") or data.get("Privilege")
+    pri = data.get("pri") or data.get("privilege")
     if pri is not None and str(pri).strip() != "":
         level = _ZK_PRI_LABEL.get(cint(pri))
         if level and user_doc.get("privilege") != level:
@@ -726,8 +726,8 @@ def _handle_operlog_user(sn: str, line: str) -> int:
     # Persist card and password into enrollment JSON. Only when the record
     # actually carries them: defaulting to "0"/"" here erased a locally enrolled
     # card or keypad password whenever firmware omitted the optional fields.
-    card = data.get("Card") or data.get("CardNo")
-    passwd = data.get("Passwd") or data.get("Password")
+    card = data.get("card") or data.get("cardno")
+    passwd = data.get("passwd") or data.get("password")
     if card is not None or passwd is not None:
         update_zkteco_enrollment(user_doc, sn, card=card, passwd=passwd)
 
@@ -891,6 +891,28 @@ def _verify_code_to_method(code_str: str) -> str | None:
 def _parse_kv(line: str) -> dict:
     """Parse ZKTeco space-separated KEY=VALUE line (e.g. 'USER PIN=001 Name=John ...')."""
     return dict(re.findall(r"(\w+)=(\S+)", line))
+
+
+_KV_KEY = re.compile(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(")
+
+
+def _parse_kv_spaced(line: str) -> dict:
+    """Parse KEY=VALUE pairs whose values may contain spaces.
+
+    ``_parse_kv`` stops at whitespace, which is fine for hashes and byte counts
+    but destroys names: ``USER PIN=1 Name=Mohammed Ramadan Pri=0`` yielded
+    ``Name=Mohammed``. People are identified by their full name, so the user
+    parsers use this one. Values run to the next ``KEY=`` token or end of line.
+    Keys are lowercased so a firmware that sends ``Pin`` and one that sends
+    ``PIN`` both resolve.
+    """
+    keys = list(_KV_KEY.finditer(line))
+    out: dict[str, str] = {}
+    for i, match in enumerate(keys):
+        start = match.end()
+        end = keys[i + 1].start() if i + 1 < len(keys) else len(line)
+        out[match.group(1).lower()] = line[start:end].strip()
+    return out
 
 
 def _zkteco_encode_time(dt: datetime) -> int:
