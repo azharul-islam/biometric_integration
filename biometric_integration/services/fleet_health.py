@@ -90,14 +90,7 @@ def assess_device(name: str) -> dict:
         minutes_silent = int((now - device.last_contact).total_seconds() // 60)
 
     pending, oldest_pending_minutes = _pending_commands(name, now)
-    failed_24h = frappe.db.count(
-        "Attendance Device Command",
-        {
-            "attendance_device": name,
-            "status": "Failed",
-            "modified": [">", now - timedelta(hours=24)],
-        },
-    )
+    failed_24h = _failed_commands(name, now)
     held_punches = frappe.db.count(
         "Attendance Punch",
         {"attendance_device": name, "status": ["in", ("Unmapped", "Failed")]},
@@ -166,6 +159,26 @@ def _pending_commands(name: str, now: datetime) -> tuple[int, int | None]:
     if not oldest:
         return pending, None
     return pending, int((now - oldest[0]).total_seconds() // 60)
+
+
+def _failed_commands(name: str, now: datetime) -> int:
+    """Failures worth a human looking at.
+
+    ``Return=-629`` is this firmware's way of saying the verb does not exist —
+    per-user queries and ``Sync User List`` fail that way by design (see
+    ``docs/vendor/zkteco/protocol/adms-push.md``). Counting those would leave
+    the badge permanently orange, which is how a real warning gets ignored.
+    """
+    rows = frappe.get_all(
+        "Attendance Device Command",
+        filters={
+            "attendance_device": name,
+            "status": "Failed",
+            "modified": [">", now - timedelta(hours=24)],
+        },
+        fields=["device_response"],
+    )
+    return sum(1 for row in rows if "-629" not in (row.device_response or ""))
 
 
 # ── Scheduled check ─────────────────────────────────────────────────────────

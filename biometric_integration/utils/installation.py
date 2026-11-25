@@ -11,6 +11,17 @@ _ZKTECO_DEFAULTS = {
     "trans_interval": 1,
 }
 
+# Fleet health. Seeded only when the field has never been written, so an
+# operator who turns a check off keeps it off across migrations.
+_FLEET_HEALTH_DEFAULTS = {
+    "enable_fleet_health": 1,
+    "offline_after_minutes": 15,
+    "clock_skew_tolerance_minutes": 5,
+    "stale_command_minutes": 30,
+}
+
+_SETTINGS = "Attendance Integration Settings"
+
 
 def after_migrate():
     """Keep settings sane and repair indexes Frappe cannot declare.
@@ -22,15 +33,32 @@ def after_migrate():
     the proper API.
     """
     try:
-        _dedupe_singles("Attendance Integration Settings")
+        _dedupe_singles(_SETTINGS)
         for field, default in _ZKTECO_DEFAULTS.items():
-            if frappe.db.get_single_value("Attendance Integration Settings", field) in (None, ""):
-                frappe.db.set_single_value("Attendance Integration Settings", field, default)
+            if frappe.db.get_single_value(_SETTINGS, field) in (None, ""):
+                frappe.db.set_single_value(_SETTINGS, field, default)
+        _seed_absent_defaults(_SETTINGS, _FLEET_HEALTH_DEFAULTS)
         frappe.db.commit()
     except Exception as exc:
         logging.warning(f"biometric_integration after_migrate: could not set defaults: {exc}")
 
     _ensure_command_poll_index()
+
+
+def _seed_absent_defaults(doctype: str, defaults: dict) -> None:
+    """Insert a default only when the field has no row at all.
+
+    ``get_single_value`` cannot be used to detect "never set" for a Check or an
+    Int: with no row it returns ``0``, which is indistinguishable from a
+    deliberate 0. On a Check field that difference decides whether a feature is
+    on, so read the row directly.
+    """
+    for field, value in defaults.items():
+        present = frappe.db.sql(
+            "select 1 from `tabSingles` where doctype=%s and field=%s", (doctype, field)
+        )
+        if not present:
+            frappe.db.set_single_value(doctype, field, value)
 
 
 def _dedupe_singles(doctype: str) -> None:
