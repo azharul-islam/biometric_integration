@@ -303,6 +303,25 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         time_str = data.get("time") or data.get("Time")
         if not pin or not time_str:
             return self.text("OK")
+        pin = str(pin).strip()
+        # Access-control events (door opened, denied, alarm) arrive on the same
+        # rtlog channel but are not attendance. They carry event/verifytype
+        # >= 100 and usually PIN 0. Keeping them out of Employee Checkin also
+        # keeps them out of the punch inbox.
+        event = cint(data.get("event") or data.get("Event") or 0)
+        verify = cint(data.get("verifytype") or data.get("Verifytype") or 0)
+        if event >= 100 or verify >= 100:
+            maybe_log(
+                sn,
+                "Access",
+                "IN",
+                f"Access event={event} PIN={pin} time={time_str}",
+                user_pin=pin,
+                raw_data=body,
+            )
+            return self.text("OK")
+        if pin in ("", "0"):
+            return self.text("OK")
         try:
             inout = data.get("inoutstatus") or data.get("InOutStatus", "0")
             log_type = "OUT" if str(inout).strip() == "1" else "IN"

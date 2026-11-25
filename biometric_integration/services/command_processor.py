@@ -203,8 +203,21 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         now = _utc_now()
         packed = _zkteco_encode_time(now)
         when = now.strftime("%Y-%m-%d %H:%M:%S UTC")
-        _finish(cmd_doc, "Success", f"Sent SET OPTIONS DateTime={packed} ({when})")
-        return f"C:{cmd_doc.name}:SET OPTIONS DateTime={packed}"
+        tz = _device_tz_offset_hours(device_sn)
+        _finish(
+            cmd_doc,
+            "Success",
+            f"Sent SET OPTIONS TimeZone={tz}, DateTime={packed} ({when})",
+        )
+        # Timezone first: the packed DateTime is GMT, so the displayed clock is
+        # GMT + TimeZone. Setting only the clock leaves a device that is on the
+        # wrong zone exactly one hour out, which is what the pilot showed.
+        return "\n".join(
+            [
+                f"C:{cmd_doc.name}:SET OPTIONS TimeZone={tz}",
+                f"C:{cmd_doc.name}:SET OPTIONS DateTime={packed}",
+            ]
+        )
 
     if cmd_doc.command_type == "Re-pull Attendance":
         # Ask the device to re-upload stored attendance logs for a date range.
@@ -320,6 +333,22 @@ def _utc_now():
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc)
+
+
+def _device_tz_offset_hours(device: str) -> str:
+    """The device's UTC offset as ZKTeco expects it (3, 5.5, ...)."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    tz_name = (
+        frappe.db.get_value("Attendance Device", device, "device_timezone")
+        or frappe.utils.get_system_timezone()
+    )
+    try:
+        offset = _dt.now(ZoneInfo(tz_name)).utcoffset().total_seconds() / 3600
+        return str(int(offset)) if offset == int(offset) else str(offset)
+    except Exception:
+        return "0"
 
 
 def _zkteco_encode_time(dt) -> int:
