@@ -342,6 +342,33 @@ def map_pin_and_replay(pin: str, employee: str) -> dict:
     return _replay(pin, employee)
 
 
+@frappe.whitelist()
+def get_fleet_health() -> list[dict]:
+    """Current health of every enabled terminal.
+
+    Read-only snapshot: the same assessment the scheduled job stores, recomputed
+    so it is current rather than up to ten minutes old.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "HR User"])
+    from biometric_integration.services.fleet_health import get_fleet_health as _snapshot
+
+    return _snapshot()
+
+
+@frappe.whitelist(methods=["POST"])
+def run_fleet_health_check() -> dict:
+    """Run the health check now, raising or clearing alerts as needed.
+
+    The scheduled job runs every ten minutes; this exists so an operator does not
+    have to wait after reseating a cable, and so the alert path can be exercised
+    without unplugging a terminal for a quarter of an hour.
+    """
+    frappe.only_for(["System Manager", "HR Manager"])
+    from biometric_integration.services.fleet_health import check_fleet
+
+    return check_fleet()
+
+
 def attendance_device_companies() -> list[str]:
     """Companies with at least one enabled attendance device.
 

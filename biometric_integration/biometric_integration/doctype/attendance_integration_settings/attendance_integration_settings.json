@@ -35,7 +35,12 @@
   "proxy_compatibility_status",
   "proxy_enabled",
   "proxy_port",
-  "generated_nginx_config"
+  "generated_nginx_config",
+  "section_fleet_health",
+  "enable_fleet_health",
+  "offline_after_minutes",
+  "clock_skew_tolerance_minutes",
+  "stale_command_minutes"
  ],
  "fields": [
   {
@@ -119,7 +124,7 @@
    "fieldname": "section_zkteco_sync",
    "fieldtype": "Section Break",
    "label": "ZKTeco Sync Parameters",
-   "description": "These values are pushed to ZKTeco devices on every handshake. EBKN devices use real-time push and do not have a polling cycle \u2014 these settings do not apply to EBKN."
+   "description": "These values are pushed to ZKTeco devices on every handshake. EBKN devices use real-time push and do not have a polling cycle — these settings do not apply to EBKN."
   },
   {
    "default": "10",
@@ -163,7 +168,7 @@
   },
   {
    "default": "1",
-   "description": "A fingerprint template only matches on a device whose fingerprint algorithm version equals the version it was captured on. When enabled, Enroll User skips (does not push) any fingerprint whose algorithm version differs from the target device's version, and logs it \u2014 the user is still registered and can enrol the finger locally. Disable to push anyway (the device usually rejects the mismatched template with Return=-1).",
+   "description": "A fingerprint template only matches on a device whose fingerprint algorithm version equals the version it was captured on. When enabled, Enroll User skips (does not push) any fingerprint whose algorithm version differs from the target device's version, and logs it — the user is still registered and can enrol the finger locally. Disable to push anyway (the device usually rejects the mismatched template with Return=-1).",
    "fieldname": "enforce_fp_version_match",
    "fieldtype": "Check",
    "label": "Enforce Fingerprint Version Match"
@@ -245,11 +250,43 @@
   {
    "fieldname": "column_break_ziga",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_fleet_health",
+   "fieldtype": "Section Break",
+   "label": "Fleet Health"
+  },
+  {
+   "fieldname": "enable_fleet_health",
+   "fieldtype": "Check",
+   "label": "Enable Fleet Health Checks",
+   "default": "1",
+   "description": "Every 10 minutes: is the terminal polling, is its clock drifting, are commands stuck."
+  },
+  {
+   "fieldname": "offline_after_minutes",
+   "fieldtype": "Int",
+   "label": "Alert When Silent For (Minutes)",
+   "default": "15",
+   "description": "Devices poll every Poll Delay seconds. A terminal quiet for longer than this raises one offline notice and one recovery notice."
+  },
+  {
+   "fieldname": "clock_skew_tolerance_minutes",
+   "fieldtype": "Int",
+   "label": "Warn On Clock Skew Above (Minutes)",
+   "default": "5",
+   "description": "Measured from real-time punches against the device's configured timezone. The timezone can only be fixed on the terminal itself."
+  },
+  {
+   "fieldname": "stale_command_minutes",
+   "fieldtype": "Int",
+   "label": "Warn On Command Pending (Minutes)",
+   "default": "30"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-10-09 12:00:00.000000",
+ "modified": "2026-11-25 18:45:00.000000",
  "modified_by": "Administrator",
  "module": "Biometric Integration",
  "name": "Attendance Integration Settings",

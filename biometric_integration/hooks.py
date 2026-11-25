@@ -21,6 +21,13 @@ after_migrate = ["biometric_integration.utils.installation.after_migrate"]
 
 # --- Scheduled Tasks ---
 scheduler_events = {
+    "cron": {
+        # A terminal that stops polling is otherwise invisible. Ten minutes keeps
+        # the offline threshold meaningful without turning into polling noise.
+        "*/10 * * * *": [
+            "biometric_integration.services.fleet_health.check_fleet",
+        ],
+    },
     "hourly": [
         # Transient insert failures (deadlock, validation) get a bounded retry.
         "biometric_integration.services.punch_inbox.retry_failed_punches",

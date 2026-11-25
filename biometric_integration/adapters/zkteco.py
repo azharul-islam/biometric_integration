@@ -45,6 +45,7 @@ from biometric_integration.services.checkin import (
     create_employee_checkin,
 )
 from biometric_integration.services.command_processor import process_device_command
+from biometric_integration.services.fleet_health import record_clock_skew
 from biometric_integration.services.punch_inbox import record_unprocessed_punch
 from biometric_integration.utils.device_cache import (
     get_employee_by_pin,
@@ -326,7 +327,12 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             inout = data.get("inoutstatus") or data.get("InOutStatus", "0")
             log_type = "OUT" if str(inout).strip() == "1" else "IN"
             biometric_method = _verify_code_to_method(data.get("verifytype") or data.get("Verifytype", ""))
-            ts = _localize_device_timestamp(datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M:%S"), sn)
+            raw_ts = datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            # rtlog is the only realtime channel: a batched ATTLOG upload is a
+            # backlog, so only here does the device timestamp say anything about
+            # the clock the terminal is keeping right now.
+            record_clock_skew(sn, raw_ts)
+            ts = _localize_device_timestamp(raw_ts, sn)
             outcome = create_employee_checkin(
                 device_pin=pin,
                 timestamp=ts,
