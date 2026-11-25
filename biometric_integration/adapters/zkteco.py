@@ -893,7 +893,7 @@ def _parse_kv(line: str) -> dict:
     return dict(re.findall(r"(\w+)=(\S+)", line))
 
 
-_KV_KEY = re.compile(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(")
+_KV_KEY = re.compile(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=")
 
 
 def _parse_kv_spaced(line: str) -> dict:
