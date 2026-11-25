@@ -647,13 +647,16 @@ def _process_user_records(sn: str, body: str) -> int:
             continue
         try:
             name = data.get("name") or data.get("Name") or data.get("username")
+            # get_or_create_user_by_pin persists a changed device name itself.
             user_doc = get_or_create_user_by_pin(pin, name)
+            changed = False
 
             pri = data.get("pri") or data.get("Pri") or data.get("Privilege")
             if pri is not None and str(pri).strip() != "":
                 level = _ZK_PRI_LABEL.get(cint(pri))
                 if level and user_doc.get("privilege") != level:
                     user_doc.privilege = level
+                    changed = True
 
             if sn and not any(
                 row.attendance_device == sn for row in user_doc.get("devices", [])
@@ -668,8 +671,12 @@ def _process_user_records(sn: str, body: str) -> int:
                             "enroll_data_source": 0,
                         },
                     )
+                    changed = True
 
-            if user_doc.is_dirty():
+            # Document has no is_dirty() in this framework version; the call raised
+            # AttributeError on every user-table upload, so the name the terminal sent
+            # was received, logged, and then thrown away. Track the edits instead.
+            if changed:
                 user_doc.save(ignore_permissions=True)
             processed += 1
         except Exception as exc:
