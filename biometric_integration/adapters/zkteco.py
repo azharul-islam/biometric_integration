@@ -225,6 +225,16 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                 return self.text("OK")
             count = args.get("count")
             if tablename.lower() == "user":
+                # Keep the raw body: whether this firmware ever pushes names, and in
+                # which field, is the recurring question when the device shows a name
+                # that ERPNext does not. Without the payload there is nothing to check.
+                maybe_log(
+                    sn,
+                    "Enrollment",
+                    "IN",
+                    f"User table upload ({count or '?'} record(s))",
+                    raw_data=body_str,
+                )
                 parsed = _process_user_records(sn, body_str)
                 count = count or parsed
             elif tablename.lower() == "biodata":
@@ -371,6 +381,17 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         """
         users_processed = 0
         bios_processed = 0
+
+        # OPERLOG is where a name typed on the terminal should arrive. Keep the raw
+        # body so a missing name can be attributed either to the device not sending
+        # it or to us not parsing it — the two need very different fixes.
+        maybe_log(
+            sn,
+            "Enrollment",
+            "IN",
+            f"OPERLOG upload ({len(body.strip().splitlines())} line(s))",
+            raw_data=body,
+        )
 
         for line in body.strip().split("\n"):
             line = line.strip()

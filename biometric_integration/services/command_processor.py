@@ -180,10 +180,21 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
         if brand == "EBKN":
             return {"trans_id": cmd_doc.name, "cmd_code": "GET_USER_ID_LIST", "body": ""}
-        # ZKTeco: classic all-users query (widest firmware support — the newer
-        # `DATA QUERY tablename=user,...` form is rejected Return=-1004 by classic
-        # firmware). The device uploads USER records, ingested by _handle_operlog_user
-        # (/iclock/cdata) or _handle_querydata (/iclock/querydata) depending on firmware.
+        # ZKTeco. The two firmware generations disagree about the table name and
+        # reject the other one outright: classic firmware has no lowercase table and
+        # answers `DATA QUERY tablename=user` with -1004, while ZAM180/ZAM230 answer
+        # `DATA QUERY USERINFO` with -629. It is the same split as DATA UPDATE
+        # (`user` vs `USERINFO`), so select on the same signal.
+        #
+        # This is the only way to read back a name typed on the keypad. Those units do
+        # not push the user table unprompted and every per-user query is rejected, so
+        # without it the device's own names never reach ERPNext and every person has
+        # to be matched to a bare PIN by hand.
+        #
+        # The device answers with `tabledata&tablename=user`, which
+        # _process_user_records already parses into Attendance Device User.
+        if _uses_new_user_verb(device_sn):
+            return f"C:{cmd_doc.name}:DATA QUERY user"
         return f"C:{cmd_doc.name}:DATA QUERY USERINFO"
 
     if cmd_doc.command_type == "Set Device Time":
