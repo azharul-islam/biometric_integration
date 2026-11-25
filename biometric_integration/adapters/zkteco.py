@@ -636,22 +636,28 @@ def _process_user_records(sn: str, body: str) -> int:
         line = line.strip()
         if not line:
             continue
-        data = _parse_kv_tsv(line) if "\t" in line else _parse_kv(line)
-        pin = (
-            data.get("pin")
-            or data.get("PIN")
-            or data.get("uid")
-            or data.get("UserID")
-        )
+        # Normalise every key to lowercase before reading anything. This firmware
+        # sends `pin=`, `name=` and `privilege=` in lowercase; enumerating the cases
+        # per field is how `privilege` was missed while `pin` was not. The result was
+        # severe: the device's own super admin (privilege=14) was never captured, so
+        # ERPNext held "Normal User" and the next push demoted the admin on the
+        # terminal — locking the menu behind "please create an admin account".
+        data = {
+            str(k or "").strip().lower(): v
+            for k, v in (
+                _parse_kv_tsv(line) if "\t" in line else _parse_kv(line)
+            ).items()
+        }
+        pin = data.get("pin") or data.get("uid") or data.get("userid")
         if not pin:
             continue
         try:
-            name = data.get("name") or data.get("Name") or data.get("username")
+            name = data.get("name") or data.get("username")
             # get_or_create_user_by_pin persists a changed device name itself.
             user_doc = get_or_create_user_by_pin(pin, name)
             changed = False
 
-            pri = data.get("pri") or data.get("Pri") or data.get("Privilege")
+            pri = data.get("pri") or data.get("privilege")
             if pri is not None and str(pri).strip() != "":
                 level = _ZK_PRI_LABEL.get(cint(pri))
                 if level and user_doc.get("privilege") != level:

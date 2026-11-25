@@ -450,21 +450,28 @@ def _zk_userinfo(cmd_id: str, pin: str, name: str, user_doc, enroll: dict | None
 
     if device and _uses_new_user_verb(device):
         # New firmware (ZAM180/ZAM230): `DATA UPDATE user`, not USERINFO. The
-        # default access group is 1; an empty CardNo/Password is valid.
-        return "\t".join(
-            [
-                f"C:{cmd_id}:DATA UPDATE user CardNo={card}",
-                f"Pin={pin}",
-                f"Password={passwd}",
-                "Group=1",
-                "StartTime=0",
-                "EndTime=0",
-                f"Name={name}",
-                f"Privilege={_zk_pri(user_doc)}",
-                "Disable=0",
-                "Verify=0",
-            ]
-        )
+        # default access group is 1; an empty CardNo is valid and must be explicit.
+        #
+        # `Password=` is only sent when we actually hold one. An empty Password field
+        # is a *set*, not a no-op: pushing it cleared the super admin's keypad
+        # password on the pilot terminal, which is precisely the erasure this
+        # function exists to prevent.
+        fields = [
+            f"C:{cmd_id}:DATA UPDATE user CardNo={card}",
+            f"Pin={pin}",
+        ]
+        if passwd:
+            fields.append(f"Password={passwd}")
+        fields += [
+            "Group=1",
+            "StartTime=0",
+            "EndTime=0",
+            f"Name={name}",
+            f"Privilege={_zk_pri(user_doc)}",
+            "Disable=0",
+            "Verify=0",
+        ]
+        return "\t".join(fields)
 
     # Classic firmware: the verb is followed by a SPACE, then tab-separated
     # fields. A tab immediately after USERINFO is read as part of the verb.
